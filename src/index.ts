@@ -378,8 +378,10 @@ async function handleSendOTP(request: Request, env: Env): Promise<Response> {
   await sendOTPEmail(email, otp, env);
 
   // OTP入力フォームへリダイレクト（トークンをクエリに含める）
+  // 前回の ?error=... が残らないよう delete してから必要なものだけ set する
   const verifyUrl = new URL(url);
   verifyUrl.pathname = '/auth/verify';
+  verifyUrl.searchParams.delete('error');
   verifyUrl.searchParams.set('email', email);
   verifyUrl.searchParams.set('t', token);
   return Response.redirect(verifyUrl.toString(), 302);
