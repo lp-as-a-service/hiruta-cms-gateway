@@ -144,6 +144,19 @@ function isAllowedEmail(email: string, allowedList: string): boolean {
 }
 
 // ================================================================
+// 共通ユーティリティ
+// ================================================================
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// ================================================================
 // HTML テンプレート
 // ================================================================
 
@@ -335,14 +348,14 @@ async function sendOTPEmail(to: string, otp: string, env: Env): Promise<void> {
 async function handleAuthGet(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const error = url.searchParams.get('error') || '';
-  const errorHtml = error ? `<div class="error">${decodeURIComponent(error)}</div>` : '';
+  const errorHtml = error ? `<div class="error">${escapeHtml(decodeURIComponent(error))}</div>` : '';
 
-  // Decap CMS から渡されるパラメータを保持
+  // redirect パラメータ（Worker middleware から渡される）と Decap CMS パラメータを保持
   const params = url.searchParams.toString();
 
   return htmlPage('ログイン - Hiruta Studio', `
     <h1>サイトの編集にログインします</h1>
-    <p class="desc">登録済みのメールアドレスを入力してください。確認コードをお送りします。</p>
+    <p class="desc">登録済みのメールアドレスに確認コードをお送りします。</p>
     ${errorHtml}
     <form method="POST" action="/auth/send-otp?${params}">
       <label>メールアドレス</label>
@@ -400,12 +413,6 @@ async function handleVerifyGet(request: Request): Promise<Response> {
   // ※ `value="${encodeURIComponent(v)}"` はダブルエンコードのバグ。
   //    searchParams.entries() は既にデコード済みの生値を返すため、
   //    HTMLの属性値としてエスケープだけすればよい。
-  const escapeHtml = (s: string) => s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
   const hiddenInputs = Array.from(url.searchParams.entries())
     .filter(([k]) => k !== 'error')
     .map(([k, v]) => `<input type="hidden" name="${escapeHtml(k)}" value="${escapeHtml(v)}">`)
@@ -451,7 +458,34 @@ async function handleVerifyPost(request: Request, env: Env): Promise<Response> {
   // セッショントークン発行
   const sessionToken = await createSessionToken(verifiedEmail, env.SESSION_SECRET);
 
-  // Decap CMS の OAuth callback へリダイレクト
+  // redirect パラメータがある場合（Worker middleware からの redirect flow）
+  // → /admin?hs_authed=1 に URL fragment でトークンを渡して戻す
+  const redirectParam = formData.get('redirect') as string | null;
+  if (redirectParam) {
+    try {
+      const dest = new URL(redirectParam);
+      // セキュリティ: workers.dev ドメインのみ許可
+      if (dest.hostname.endsWith('.workers.dev') || dest.hostname === 'localhost') {
+        // クエリで認証済みフラグ、fragment でトークンを渡す
+        dest.searchParams.set('hs_authed', '1');
+        const destWithFragment = dest.toString() + '#hs_token=' + encodeURIComponent(sessionToken);
+
+        // Set-Cookie でセッションを設定（次回以降の Worker ガードをパスさせる）
+        return new Response(null, {
+          status: 302,
+          headers: {
+            'Location': destWithFragment,
+            'Set-Cookie': `hs_session=${sessionToken}; Path=/; Secure; SameSite=Lax; Max-Age=14400`
+          }
+        });
+      }
+    } catch {
+      // URL パース失敗は無視して通常フローへ
+    }
+  }
+
+  // redirect パラメータがない場合（Decap CMS の popup フロー / 直接アクセス）
+  // → 従来通り /auth/callback へ
   const callbackUrl = new URL(url);
   callbackUrl.pathname = '/auth/callback';
   callbackUrl.searchParams.set('token', sessionToken);
