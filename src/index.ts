@@ -485,20 +485,72 @@ async function handleCallback(request: Request, env: Env): Promise<Response> {
 <head>
   <meta charset="utf-8">
   <title>認証完了 - Hiruta Studio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500&family=Shippori+Mincho+B1:wght@500&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'Noto Sans JP', sans-serif;
+      background: #faf8f4;
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: #333;
+      padding: 24px;
+      box-sizing: border-box;
+    }
+    .brand {
+      font-family: 'Shippori Mincho B1', serif;
+      font-size: 28px;
+      color: #3d5a3e;
+      margin-bottom: 32px;
+      letter-spacing: 0.08em;
+    }
+    #status {
+      font-size: 15px;
+      color: #666;
+      text-align: center;
+      max-width: 480px;
+      line-height: 1.9;
+    }
+    #status.error { color: #8b4a3a; }
+    #status ol { text-align: left; padding-left: 20px; margin: 16px 0; }
+  </style>
 </head>
 <body>
+  <div class="brand">Hiruta Studio</div>
+  <div id="status">認証中…</div>
   <script>
   (function() {
     var msg = ${JSON.stringify(postMessageContent)};
+    var el = document.getElementById('status');
 
+    function show(html, isError) {
+      el.innerHTML = html;
+      el.className = isError ? 'error' : '';
+    }
+
+    // 同一タブで開かれた場合（ポップアップがブロックされた等）:
+    // トークンを親ウィンドウに渡せないので、ユーザーに案内を表示する
     if (!window.opener) {
-      document.body.innerHTML = '<p style="font-family:sans-serif;padding:40px;text-align:center;color:#666;">認証完了。このウィンドウを閉じてください。</p>';
+      show(
+        '<strong>認証は完了しましたが、編集画面に戻れません。</strong>' +
+        '<ol>' +
+          '<li>このタブを閉じてください</li>' +
+          '<li>ブラウザのアドレスバー右端の「ポップアップがブロックされました」表示で、このサイトのポップアップを許可</li>' +
+          '<li>元の管理画面で「編集を始める」をもう一度クリック</li>' +
+        '</ol>',
+        true
+      );
       return;
     }
 
     function receiveMessage(e) {
       // 親から ack を受け取ったら、その origin に正式な success を送信
       window.opener.postMessage(msg, e.origin);
+      show('認証完了。自動で閉じます…');
       setTimeout(function() { window.close(); }, 500);
     }
 
@@ -507,7 +559,6 @@ async function handleCallback(request: Request, env: Env): Promise<Response> {
     window.opener.postMessage("authorizing:github", "*");
   })();
   </script>
-  <p style="font-family:sans-serif;padding:40px;text-align:center;color:#666;">認証中...</p>
 </body>
 </html>`, {
     headers: { 'Content-Type': 'text/html; charset=utf-8' }
