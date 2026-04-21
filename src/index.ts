@@ -253,7 +253,7 @@ async function sendOTPEmail(to: string, otp: string): Promise<void> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        from: { email: 'noreply@hiruta-lp.pages.dev', name: 'KANPAKE CMS' },
+        from: { email: 'noreply@hiruta-lp-astro.kazu12127823.workers.dev', name: 'KANPAKE CMS' },
         personalizations: [{ to: [{ email: to }] }],
         subject: '【KANPAKE CMS】ログイン確認コード',
         content: [
