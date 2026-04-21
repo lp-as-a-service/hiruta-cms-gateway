@@ -26,8 +26,9 @@ export interface Env {
   GITHUB_TOKEN: string;    // 管理者の GitHub PAT
   SESSION_SECRET: string;  // OTP・セッション署名用シークレット（32文字以上推奨）
   ALLOWED_EMAILS: string;  // カンマ区切りの許可メールアドレス
-  GITHUB_REPO: string;     // "naruNaru1212/hiruta-lp-astro"
+  GITHUB_REPO: string;     // "lp-as-a-service/hiruta-lp-astro"
   GITHUB_BRANCH: string;   // "main"
+  RESEND_API_KEY: string;  // Resend API key（re_xxx）
 }
 
 // ================================================================
@@ -231,7 +232,7 @@ function htmlPage(title: string, body: string): Response {
 </head>
 <body>
   <div class="card">
-    <div class="logo">KANPAKE CMS</div>
+    <div class="logo">Hiruta Content Manager</div>
     ${body}
   </div>
 </body>
@@ -241,48 +242,55 @@ function htmlPage(title: string, body: string): Response {
 }
 
 // ================================================================
-// メール送信（MailChannels Free API）
-// Cloudflare Workers から無料で使える
+// メール送信（Resend API）
+// https://resend.com/ のAPI経由でOTPメールを送信。
+// 送信元ドメイン `onboarding@resend.dev` は Resend 提供の検証済み共有ドメイン。
+// 独自ドメインを使う場合は Resend Dashboard で DNS検証後、from を差し替える。
 // ================================================================
 
-async function sendOTPEmail(to: string, otp: string): Promise<void> {
+async function sendOTPEmail(to: string, otp: string, env: Env): Promise<void> {
   console.log(`[OTP] Sending to: ${to}, code: ${otp}`);
 
-  try {
-    const response = await fetch('https://api.mailchannels.net/tx/v1/send', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        from: { email: 'noreply@hiruta-lp-astro.kazu12127823.workers.dev', name: 'KANPAKE CMS' },
-        personalizations: [{ to: [{ email: to }] }],
-        subject: '【KANPAKE CMS】ログイン確認コード',
-        content: [
-          {
-            type: 'text/plain',
-            value: `確認コード: ${otp}\n\nこのコードは10分間有効です。\nCMS画面に戻って入力してください。\n\n身に覚えのない場合は、このメールを無視してください。`
-          },
-          {
-            type: 'text/html',
-            value: `
+  if (!env.RESEND_API_KEY) {
+    console.error(`[OTP] RESEND_API_KEY is not set. OTP=${otp} for ${to}`);
+    return;
+  }
+
+  const htmlBody = `
 <div style="font-family:sans-serif;max-width:400px;margin:0 auto;padding:32px 0;">
-  <p style="color:#999;font-size:12px;letter-spacing:0.05em;text-transform:uppercase;margin-bottom:24px;">KANPAKE CMS</p>
+  <p style="color:#999;font-size:12px;letter-spacing:0.05em;text-transform:uppercase;margin-bottom:24px;">Hiruta Content Manager</p>
   <h2 style="font-size:20px;font-weight:600;color:#1a1a1a;margin-bottom:8px;">ログイン確認コード</h2>
   <p style="color:#666;font-size:14px;margin-bottom:24px;">CMSにログインするための確認コードです。</p>
   <div style="background:#f5f5f0;border-radius:12px;padding:24px;text-align:center;margin-bottom:24px;">
     <span style="font-size:36px;font-weight:700;letter-spacing:12px;color:#1a1a1a;">${otp}</span>
   </div>
   <p style="color:#888;font-size:13px;">このコードは<strong>10分間</strong>有効です。<br>身に覚えのない場合は無視してください。</p>
-</div>`
-          }
-        ]
+</div>`;
+
+  const textBody = `確認コード: ${otp}\n\nこのコードは10分間有効です。\nCMS画面に戻って入力してください。\n\n身に覚えのない場合は、このメールを無視してください。`;
+
+  try {
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        from: 'Hiruta Content Manager <onboarding@resend.dev>',
+        to: [to],
+        subject: '【Hiruta Content Manager】ログイン確認コード',
+        html: htmlBody,
+        text: textBody
       })
     });
 
     if (!response.ok) {
       const errText = await response.text();
-      console.error(`[OTP] MailChannels failed: ${response.status} ${errText}`);
+      console.error(`[OTP] Resend failed: ${response.status} ${errText}`);
     } else {
-      console.log(`[OTP] Email sent successfully to ${to}`);
+      const result = await response.json() as { id?: string };
+      console.log(`[OTP] Email sent successfully to ${to} (id: ${result.id ?? 'unknown'})`);
     }
   } catch (e) {
     console.error(`[OTP] Email exception:`, e);
@@ -301,7 +309,7 @@ async function handleAuthGet(request: Request): Promise<Response> {
   // Decap CMS から渡されるパラメータを保持
   const params = url.searchParams.toString();
 
-  return htmlPage('ログイン - KANPAKE CMS', `
+  return htmlPage('ログイン - Hiruta Content Manager', `
     <h1>コンテンツ管理にログイン</h1>
     <p class="desc">登録済みのメールアドレスを入力してください。確認コードをお送りします。</p>
     ${errorHtml}
@@ -336,7 +344,7 @@ async function handleSendOTP(request: Request, env: Env): Promise<Response> {
   const { otp, token } = await generateOTPToken(email, env.SESSION_SECRET);
 
   // メール送信（非同期、失敗しても処理継続）
-  await sendOTPEmail(email, otp);
+  await sendOTPEmail(email, otp, env);
 
   // OTP入力フォームへリダイレクト（トークンをクエリに含める）
   const verifyUrl = new URL(url);
@@ -361,7 +369,7 @@ async function handleVerifyGet(request: Request): Promise<Response> {
     .map(([k, v]) => `<input type="hidden" name="${k}" value="${encodeURIComponent(v)}">`)
     .join('\n');
 
-  return htmlPage('確認コードの入力 - KANPAKE CMS', `
+  return htmlPage('確認コードの入力 - Hiruta Content Manager', `
     <h1>確認コードを入力</h1>
     <p class="desc">メールに届いた6桁のコードを入力してください。</p>
     ${msgHtml}
@@ -429,7 +437,7 @@ async function handleCallback(request: Request, env: Env): Promise<Response> {
 <html lang="ja">
 <head>
   <meta charset="utf-8">
-  <title>認証完了 - KANPAKE CMS</title>
+  <title>認証完了 - Hiruta Content Manager</title>
 </head>
 <body>
   <script>
