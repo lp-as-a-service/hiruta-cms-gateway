@@ -116,6 +116,26 @@ v=spf1 include:relay.mailchannels.net ~all
 現在はメール OTP 認証のみ対応。
 将来的に Gmail OAuth（Google IdP）に切り替える場合は、Worker の認証フローを変更する。
 
+### Cloudflare Workers β プランへの移行時の注意（ブランディングについて）
+
+**Worker（この Gateway）側のブランディングは β 移行時に消える。**
+
+Cloudflare Workers の Paid（β）プランに移行すると、このWorkerは削除または再デプロイが必要になる。
+その際、`src/index.ts` の `htmlPage()` に書かれた Hiruta Studio ブランディング（認証画面のデザイン・カラー）は引き継がれない。
+
+**ただし Decap CMS 側（`hiruta-lp-astro/public/admin/index.html`）のブランディングは β 移行後も維持される。**
+
+`index.html` は Decap CMS の backend 設定（`base_url`）とは独立しており、
+バックエンドが何であれ Hiruta Studio のブランド表示（ロゴ・カラー・フォント・ボタン文言）は機能し続ける。
+
+| コンポーネント | β 移行後の状態 | 理由 |
+|--------------|--------------|------|
+| Worker 認証画面（/auth）| 要再ブランディング | Worker 自体の再デプロイが必要 |
+| Decap CMS admin UI（/admin）| **自動で引き継がれる** | `index.html` は backend 非依存 |
+
+β 移行後に認証画面を再ブランディングする場合は、`src/index.ts` の `htmlPage()` 関数を
+ブランドパレット（README の Hiruta Studio 仕様）に合わせて更新してデプロイすること。
+
 ## 構成
 
 ```
