@@ -1,0 +1,17 @@
+name = "hiruta-cms-gateway"
+main = "src/index.ts"
+compatibility_date = "2025-04-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+GITHUB_REPO = "naruNaru1212/hiruta-lp-astro"
+GITHUB_BRANCH = "main"
+
+# Secrets（wrangler secret put で設定、ソースには含めない）:
+#   GITHUB_TOKEN      - 管理者の GitHub PAT（repo権限が必要）
+#   SESSION_SECRET    - HMAC署名用シークレット（32文字以上の乱数）
+#   ALLOWED_EMAILS    - 許可するメールアドレス（カンマ区切り）
+#                       例: "hiruta@example.com,kazu@example.com"
+
+# workers.dev ドメインを使用
+# デプロイ後の URL: https://hiruta-cms-gateway.{subdomain}.workers.dev
