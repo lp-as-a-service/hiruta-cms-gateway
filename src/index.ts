@@ -10,16 +10,18 @@
  * - セッションも署名付き JWT 形式（KV 不要）
  *
  * エンドポイント:
- * GET  /auth               - OTP ログインフォーム
+ * GET  /auth               - OTP ログインフォーム（メールアドレス入力）
  * POST /auth/send-otp      - OTP 生成・メール送信
  * GET  /auth/verify        - OTP 入力フォーム
- * POST /auth/verify        - OTP 検証 → セッショントークン発行
- * GET  /auth/callback      - Decap CMS OAuth callback（postMessage）
+ * POST /auth/verify        - OTP 検証 → redirect flow でトークンを返す（redirect パラメータ必須）
  * GET  /github/*           - GitHub API プロキシ（セッション検証付き）
  * POST /github/*           - GitHub API プロキシ
  * PUT  /github/*           - GitHub API プロキシ
  * PATCH /github/*          - GitHub API プロキシ
  * DELETE /github/*         - GitHub API プロキシ
+ *
+ * 廃止:
+ * GET /auth/callback       - popup flow 用（廃止。redirect flow のみ）
  */
 
 export interface Env {
@@ -169,11 +171,12 @@ function htmlPage(title: string, body: string): Response {
   <title>${title}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
-  <link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho+B1:wght@400;600&family=Noto+Sans+JP:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho+B1:wght@400;600;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
   <style>
     :root {
       --hs-primary:   #3d5a3e;
       --hs-primary-d: #243d26;
+      --hs-primary-m: #4a6741;
       --hs-primary-l: #5a7a5c;
       --hs-bg:        #faf8f4;
       --hs-bg-warm:   #f4f0e8;
@@ -185,96 +188,203 @@ function htmlPage(title: string, body: string): Response {
       --hs-serif:     'Shippori Mincho B1', serif;
       --hs-sans:      'Noto Sans JP', sans-serif;
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { font-size: 16px; }
     body {
       font-family: var(--hs-sans);
       background: var(--hs-bg);
       min-height: 100vh;
+      min-width: 320px;
+      display: flex;
+      flex-direction: column;
+      color: var(--hs-text);
+    }
+    /* 固定ヘッダー */
+    .hs-header {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      height: 52px;
+      background: var(--hs-primary);
+      display: flex;
+      align-items: center;
+      padding: 0 24px;
+      z-index: 100;
+    }
+    .hs-header-brand {
+      font-family: var(--hs-serif);
+      font-size: 17px;
+      font-weight: 600;
+      color: #ffffff;
+      letter-spacing: 0.08em;
+    }
+    /* メインコンテンツ（ヘッダー分下げる） */
+    .hs-body {
+      flex: 1;
       display: flex;
       align-items: center;
       justify-content: center;
-      color: var(--hs-text);
+      padding: 88px 20px 48px;
     }
+    /* カード */
     .card {
       background: white;
-      border-radius: 16px;
-      padding: 48px 44px;
+      border-radius: 12px;
+      padding: 40px 36px 44px;
       width: 100%;
       max-width: 420px;
-      box-shadow: 0 4px 32px rgba(61,90,62,0.10);
+      box-shadow: 0 4px 32px rgba(61,90,62,0.08);
       border: 1px solid var(--hs-border);
     }
+    @media (max-width: 480px) {
+      .card { padding: 32px 24px 36px; border-radius: 8px; }
+    }
+    /* カード内ブランドラベル */
     .brand {
       font-family: var(--hs-serif);
-      font-size: 22px;
+      font-size: 12px;
       font-weight: 600;
       color: var(--hs-primary);
-      margin-bottom: 32px;
-      letter-spacing: 0.06em;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      margin-bottom: 20px;
     }
-    h1 { font-size: 20px; font-weight: 500; color: var(--hs-text); margin-bottom: 8px; }
-    p.desc { font-size: 14px; color: var(--hs-text-sub); margin-bottom: 28px; line-height: 1.7; }
-    label { display: block; font-size: 13px; font-weight: 500; color: var(--hs-accent-d); margin-bottom: 6px; }
-    input[type="email"], input[type="text"] {
+    /* 見出し・説明 */
+    h1 {
+      font-family: var(--hs-serif);
+      font-size: 21px;
+      font-weight: 700;
+      color: var(--hs-primary-d);
+      line-height: 1.6;
+      margin-bottom: 8px;
+      letter-spacing: 0.03em;
+    }
+    p.desc {
+      font-size: 14px;
+      color: var(--hs-text-sub);
+      margin-bottom: 28px;
+      line-height: 1.85;
+    }
+    /* フォームラベル */
+    label {
+      display: block;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--hs-accent-d);
+      margin-bottom: 6px;
+      letter-spacing: 0.02em;
+    }
+    /* 入力フィールド */
+    input[type="email"],
+    input[type="text"] {
       width: 100%;
       padding: 12px 14px;
       border: 1.5px solid var(--hs-border);
-      border-radius: 8px;
+      border-radius: 7px;
       font-size: 15px;
       font-family: var(--hs-sans);
       color: var(--hs-text);
       outline: none;
-      transition: border-color 0.2s, box-shadow 0.2s;
+      transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
       margin-bottom: 16px;
       background: var(--hs-bg);
+      -webkit-appearance: none;
+      appearance: none;
     }
     input:focus {
       border-color: var(--hs-primary);
-      box-shadow: 0 0 0 3px rgba(61,90,62,0.12);
+      box-shadow: 0 0 0 3px rgba(61,90,62,0.14);
       background: white;
     }
+    /* 送信ボタン */
     button[type="submit"] {
       width: 100%;
-      padding: 13px;
+      padding: 14px;
       background: var(--hs-primary);
       color: white;
       border: none;
-      border-radius: 8px;
+      border-radius: 7px;
       font-size: 15px;
       font-family: var(--hs-sans);
       font-weight: 500;
       cursor: pointer;
-      transition: background 0.2s;
-      letter-spacing: 0.02em;
+      transition: background 0.18s ease, box-shadow 0.18s ease, transform 0.12s ease;
+      letter-spacing: 0.04em;
+      -webkit-tap-highlight-color: transparent;
     }
-    button[type="submit"]:hover { background: var(--hs-primary-d); }
+    button[type="submit"]:hover {
+      background: var(--hs-primary-m);
+      box-shadow: 0 4px 16px rgba(61,90,62,0.22);
+      transform: translateY(-1px);
+    }
+    button[type="submit"]:active {
+      background: var(--hs-primary-d);
+      box-shadow: none;
+      transform: translateY(0);
+    }
+    button[type="submit"]:focus-visible {
+      outline: 3px solid var(--hs-primary);
+      outline-offset: 2px;
+    }
+    /* エラー表示（柔らかい枠付き） */
     .error {
-      background: #fef2f2;
-      border: 1px solid #fecaca;
-      color: #b91c1c;
-      padding: 10px 14px;
-      border-radius: 8px;
-      font-size: 14px;
+      background: #fef9f9;
+      border: 1px solid #f5c6c6;
+      border-left: 3px solid #d9534f;
+      border-radius: 6px;
+      padding: 11px 14px 11px 36px;
+      font-size: 13px;
+      color: #8b2020;
       margin-bottom: 16px;
+      line-height: 1.7;
+      position: relative;
     }
+    .error::before {
+      content: '!';
+      position: absolute;
+      left: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 17px;
+      height: 17px;
+      border-radius: 50%;
+      background: #d9534f;
+      color: #fff;
+      font-size: 11px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+      text-align: center;
+    }
+    /* インフォ表示 */
     .info {
       background: var(--hs-bg-warm);
       border: 1px solid var(--hs-border);
+      border-left: 3px solid var(--hs-accent);
       color: var(--hs-accent-d);
-      padding: 10px 14px;
-      border-radius: 8px;
+      padding: 11px 14px;
+      border-radius: 6px;
       font-size: 14px;
       margin-bottom: 16px;
+      line-height: 1.7;
     }
-    .hint { font-size: 13px; color: var(--hs-text-sub); margin-top: 14px; text-align: center; }
+    .info strong { color: var(--hs-primary-d); font-weight: 700; }
+    /* ヒント・リンク */
+    .hint { font-size: 13px; color: var(--hs-text-sub); margin-top: 16px; text-align: center; line-height: 1.8; }
     a { color: var(--hs-primary); text-decoration: none; }
     a:hover { text-decoration: underline; color: var(--hs-primary-d); }
   </style>
 </head>
 <body>
-  <div class="card">
-    <div class="brand">Hiruta Studio</div>
-    ${body}
+  <header class="hs-header">
+    <span class="hs-header-brand">Hiruta Studio</span>
+  </header>
+  <div class="hs-body">
+    <div class="card">
+      <div class="brand">Hiruta Studio</div>
+      ${body}
+    </div>
   </div>
 </body>
 </html>`, {
@@ -484,117 +594,41 @@ async function handleVerifyPost(request: Request, env: Env): Promise<Response> {
     }
   }
 
-  // redirect パラメータがない場合（Decap CMS の popup フロー / 直接アクセス）
-  // → 従来通り /auth/callback へ
-  const callbackUrl = new URL(url);
-  callbackUrl.pathname = '/auth/callback';
-  callbackUrl.searchParams.set('token', sessionToken);
-  return Response.redirect(callbackUrl.toString(), 302);
-}
-
-async function handleCallback(request: Request, env: Env): Promise<Response> {
-  const url = new URL(request.url);
-  const token = url.searchParams.get('token') || '';
-
-  const email = await verifySessionToken(token, env.SESSION_SECRET);
-  if (!email) {
-    return htmlPage('認証エラー - Hiruta Studio', `
-      <h1>認証に失敗しました</h1>
-      <p class="desc">セッションが無効です。<a href="/auth">再度ログイン</a>してください。</p>
-    `);
-  }
-
-  // Decap CMS が期待する postMessage 形式
-  // "authorization:github:success:{"token":"...","provider":"github"}"
-  const cmsToken = JSON.stringify({ token: token, provider: 'github' });
-  const postMessageContent = `authorization:github:success:${cmsToken}`;
-
-  // Decap CMS 公式の OAuth ハンドシェイクに準拠:
-  // 1. ポップアップが親に "authorizing:github" を送る（準備完了の合図）
-  // 2. 親が message を返してくる（そのイベントから e.origin が取れる）
-  // 3. その origin に対して "authorization:github:success:{...}" を送り返す
-  // 4. ポップアップを閉じる
+  // redirect パラメータがない場合はエラー（popup flow は廃止。redirect flow のみ）
   return new Response(`<!DOCTYPE html>
 <html lang="ja">
 <head>
   <meta charset="utf-8">
-  <title>認証完了 - Hiruta Studio</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>エラー - Hiruta Studio</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500&family=Shippori+Mincho+B1:wght@500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho+B1:wght@400;600&family=Noto+Sans+JP:wght@400;500&display=swap" rel="stylesheet">
   <style>
-    body {
-      font-family: 'Noto Sans JP', sans-serif;
-      background: #faf8f4;
-      margin: 0;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      color: #333;
-      padding: 24px;
-      box-sizing: border-box;
+    :root {
+      --hs-primary: #3d5a3e; --hs-primary-d: #243d26;
+      --hs-bg: #faf8f4; --hs-text: #333; --hs-text-sub: #666;
+      --hs-border: #ddd0c0; --hs-serif: 'Shippori Mincho B1',serif; --hs-sans: 'Noto Sans JP',sans-serif;
     }
-    .brand {
-      font-family: 'Shippori Mincho B1', serif;
-      font-size: 28px;
-      color: #3d5a3e;
-      margin-bottom: 32px;
-      letter-spacing: 0.08em;
-    }
-    #status {
-      font-size: 15px;
-      color: #666;
-      text-align: center;
-      max-width: 480px;
-      line-height: 1.9;
-    }
-    #status.error { color: #8b4a3a; }
-    #status ol { text-align: left; padding-left: 20px; margin: 16px 0; }
+    *{box-sizing:border-box;margin:0;padding:0;}
+    body{font-family:var(--hs-sans);background:var(--hs-bg);min-height:100vh;display:flex;align-items:center;justify-content:center;color:var(--hs-text);}
+    .card{background:#fff;border-radius:12px;padding:44px 40px;width:100%;max-width:420px;box-shadow:0 4px 32px rgba(61,90,62,0.08);border:1px solid var(--hs-border);}
+    .brand{font-family:var(--hs-serif);font-size:13px;font-weight:600;color:var(--hs-primary);letter-spacing:0.15em;text-transform:uppercase;margin-bottom:24px;}
+    h1{font-family:var(--hs-serif);font-size:20px;font-weight:600;color:#333;margin-bottom:12px;}
+    p{font-size:14px;color:var(--hs-text-sub);line-height:1.8;margin-bottom:24px;}
+    a{display:block;text-align:center;padding:13px;background:var(--hs-primary);color:#fff;border-radius:7px;font-size:15px;font-family:var(--hs-sans);font-weight:500;text-decoration:none;transition:background .18s;}
+    a:hover{background:var(--hs-primary-d);}
   </style>
 </head>
 <body>
-  <div class="brand">Hiruta Studio</div>
-  <div id="status">認証中…</div>
-  <script>
-  (function() {
-    var msg = ${JSON.stringify(postMessageContent)};
-    var el = document.getElementById('status');
-
-    function show(html, isError) {
-      el.innerHTML = html;
-      el.className = isError ? 'error' : '';
-    }
-
-    // 同一タブで開かれた場合（ポップアップがブロックされた等）:
-    // トークンを親ウィンドウに渡せないので、ユーザーに案内を表示する
-    if (!window.opener) {
-      show(
-        '<strong>認証は完了しましたが、編集画面に戻れません。</strong>' +
-        '<ol>' +
-          '<li>このタブを閉じてください</li>' +
-          '<li>ブラウザのアドレスバー右端の「ポップアップがブロックされました」表示で、このサイトのポップアップを許可</li>' +
-          '<li>元の管理画面で「編集を始める」をもう一度クリック</li>' +
-        '</ol>',
-        true
-      );
-      return;
-    }
-
-    function receiveMessage(e) {
-      // 親から ack を受け取ったら、その origin に正式な success を送信
-      window.opener.postMessage(msg, e.origin);
-      show('認証完了。自動で閉じます…');
-      setTimeout(function() { window.close(); }, 500);
-    }
-
-    window.addEventListener("message", receiveMessage, false);
-    // 最初のハンドシェイク: "authorizing:github"
-    window.opener.postMessage("authorizing:github", "*");
-  })();
-  </script>
+  <div class="card">
+    <div class="brand">Hiruta Studio</div>
+    <h1>リクエストに問題があります</h1>
+    <p>ログインページへの直接アクセスはできません。<br>サイト編集画面からログインしてください。</p>
+    <a href="https://hiruta-lp-astro.kazu12127823.workers.dev/admin/">編集画面に戻る</a>
+  </div>
 </body>
 </html>`, {
+    status: 400,
     headers: { 'Content-Type': 'text/html; charset=utf-8' }
   });
 }
@@ -689,7 +723,6 @@ export default {
     if (pathname === '/auth/send-otp' && method === 'POST') return handleSendOTP(request, env);
     if (pathname === '/auth/verify' && method === 'GET') return handleVerifyGet(request);
     if (pathname === '/auth/verify' && method === 'POST') return handleVerifyPost(request, env);
-    if (pathname === '/auth/callback') return handleCallback(request, env);
 
     // GitHub API プロキシ（セッション検証）
     if (pathname.startsWith('/github/')) {
