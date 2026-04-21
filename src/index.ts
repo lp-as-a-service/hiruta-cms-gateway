@@ -363,10 +363,19 @@ async function handleVerifyGet(request: Request): Promise<Response> {
     ? `<div class="error">${decodeURIComponent(error)}</div>`
     : `<div class="info">確認コードを <strong>${email}</strong> に送信しました。</div>`;
 
-  // hidden で全パラメータを保持
+  // hidden で全パラメータを保持（HTML エスケープのみ。URL エンコードしない）
+  // ※ `value="${encodeURIComponent(v)}"` はダブルエンコードのバグ。
+  //    searchParams.entries() は既にデコード済みの生値を返すため、
+  //    HTMLの属性値としてエスケープだけすればよい。
+  const escapeHtml = (s: string) => s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
   const hiddenInputs = Array.from(url.searchParams.entries())
     .filter(([k]) => k !== 'error')
-    .map(([k, v]) => `<input type="hidden" name="${k}" value="${encodeURIComponent(v)}">`)
+    .map(([k, v]) => `<input type="hidden" name="${escapeHtml(k)}" value="${escapeHtml(v)}">`)
     .join('\n');
 
   return htmlPage('確認コードの入力 - Hiruta Content Manager', `
