@@ -442,6 +442,11 @@ async function handleCallback(request: Request, env: Env): Promise<Response> {
   const cmsToken = JSON.stringify({ token: token, provider: 'github' });
   const postMessageContent = `authorization:github:success:${cmsToken}`;
 
+  // Decap CMS 公式の OAuth ハンドシェイクに準拠:
+  // 1. ポップアップが親に "authorizing:github" を送る（準備完了の合図）
+  // 2. 親が message を返してくる（そのイベントから e.origin が取れる）
+  // 3. その origin に対して "authorization:github:success:{...}" を送り返す
+  // 4. ポップアップを閉じる
   return new Response(`<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -452,12 +457,21 @@ async function handleCallback(request: Request, env: Env): Promise<Response> {
   <script>
   (function() {
     var msg = ${JSON.stringify(postMessageContent)};
-    if (window.opener) {
-      window.opener.postMessage(msg, "*");
-      setTimeout(function() { window.close(); }, 500);
-    } else {
+
+    if (!window.opener) {
       document.body.innerHTML = '<p style="font-family:sans-serif;padding:40px;text-align:center;color:#666;">認証完了。このウィンドウを閉じてください。</p>';
+      return;
     }
+
+    function receiveMessage(e) {
+      // 親から ack を受け取ったら、その origin に正式な success を送信
+      window.opener.postMessage(msg, e.origin);
+      setTimeout(function() { window.close(); }, 500);
+    }
+
+    window.addEventListener("message", receiveMessage, false);
+    // 最初のハンドシェイク: "authorizing:github"
+    window.opener.postMessage("authorizing:github", "*");
   })();
   </script>
   <p style="font-family:sans-serif;padding:40px;text-align:center;color:#666;">認証中...</p>
