@@ -154,85 +154,113 @@ function htmlPage(title: string, body: string): Response {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${title}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+  <link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho+B1:wght@400;600&family=Noto+Sans+JP:wght@400;500&display=swap" rel="stylesheet">
   <style>
+    :root {
+      --hs-primary:   #3d5a3e;
+      --hs-primary-d: #243d26;
+      --hs-primary-l: #5a7a5c;
+      --hs-bg:        #faf8f4;
+      --hs-bg-warm:   #f4f0e8;
+      --hs-accent:    #8c7355;
+      --hs-accent-d:  #6a5a48;
+      --hs-text:      #333333;
+      --hs-text-sub:  #666666;
+      --hs-border:    #ddd0c0;
+      --hs-serif:     'Shippori Mincho B1', serif;
+      --hs-sans:      'Noto Sans JP', sans-serif;
+    }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: #f5f5f0;
+      font-family: var(--hs-sans);
+      background: var(--hs-bg);
       min-height: 100vh;
       display: flex;
       align-items: center;
       justify-content: center;
+      color: var(--hs-text);
     }
     .card {
       background: white;
-      border-radius: 12px;
-      padding: 40px;
+      border-radius: 16px;
+      padding: 48px 44px;
       width: 100%;
-      max-width: 400px;
-      box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+      max-width: 420px;
+      box-shadow: 0 4px 32px rgba(61,90,62,0.10);
+      border: 1px solid var(--hs-border);
     }
-    .logo {
-      font-size: 13px;
-      color: #999;
-      margin-bottom: 24px;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
+    .brand {
+      font-family: var(--hs-serif);
+      font-size: 22px;
+      font-weight: 600;
+      color: var(--hs-primary);
+      margin-bottom: 32px;
+      letter-spacing: 0.06em;
     }
-    h1 { font-size: 22px; font-weight: 600; color: #1a1a1a; margin-bottom: 8px; }
-    p.desc { font-size: 14px; color: #666; margin-bottom: 28px; line-height: 1.6; }
-    label { display: block; font-size: 13px; font-weight: 500; color: #444; margin-bottom: 6px; }
+    h1 { font-size: 20px; font-weight: 500; color: var(--hs-text); margin-bottom: 8px; }
+    p.desc { font-size: 14px; color: var(--hs-text-sub); margin-bottom: 28px; line-height: 1.7; }
+    label { display: block; font-size: 13px; font-weight: 500; color: var(--hs-accent-d); margin-bottom: 6px; }
     input[type="email"], input[type="text"] {
       width: 100%;
       padding: 12px 14px;
-      border: 1.5px solid #e0e0e0;
+      border: 1.5px solid var(--hs-border);
       border-radius: 8px;
       font-size: 15px;
-      color: #1a1a1a;
+      font-family: var(--hs-sans);
+      color: var(--hs-text);
       outline: none;
-      transition: border-color 0.2s;
+      transition: border-color 0.2s, box-shadow 0.2s;
       margin-bottom: 16px;
+      background: var(--hs-bg);
     }
-    input:focus { border-color: #2563eb; }
+    input:focus {
+      border-color: var(--hs-primary);
+      box-shadow: 0 0 0 3px rgba(61,90,62,0.12);
+      background: white;
+    }
     button[type="submit"] {
       width: 100%;
       padding: 13px;
-      background: #1a1a1a;
+      background: var(--hs-primary);
       color: white;
       border: none;
       border-radius: 8px;
       font-size: 15px;
+      font-family: var(--hs-sans);
       font-weight: 500;
       cursor: pointer;
       transition: background 0.2s;
+      letter-spacing: 0.02em;
     }
-    button[type="submit"]:hover { background: #333; }
+    button[type="submit"]:hover { background: var(--hs-primary-d); }
     .error {
       background: #fef2f2;
       border: 1px solid #fecaca;
-      color: #dc2626;
+      color: #b91c1c;
       padding: 10px 14px;
       border-radius: 8px;
       font-size: 14px;
       margin-bottom: 16px;
     }
     .info {
-      background: #eff6ff;
-      border: 1px solid #bfdbfe;
-      color: #1d4ed8;
+      background: var(--hs-bg-warm);
+      border: 1px solid var(--hs-border);
+      color: var(--hs-accent-d);
       padding: 10px 14px;
       border-radius: 8px;
       font-size: 14px;
       margin-bottom: 16px;
     }
-    .hint { font-size: 13px; color: #888; margin-top: 12px; text-align: center; }
-    a { color: #2563eb; text-decoration: none; }
-    a:hover { text-decoration: underline; }
+    .hint { font-size: 13px; color: var(--hs-text-sub); margin-top: 14px; text-align: center; }
+    a { color: var(--hs-primary); text-decoration: none; }
+    a:hover { text-decoration: underline; color: var(--hs-primary-d); }
   </style>
 </head>
 <body>
   <div class="card">
-    <div class="logo">Hiruta Content Manager</div>
+    <div class="brand">Hiruta Studio</div>
     ${body}
   </div>
 </body>
@@ -257,14 +285,17 @@ async function sendOTPEmail(to: string, otp: string, env: Env): Promise<void> {
   }
 
   const htmlBody = `
-<div style="font-family:sans-serif;max-width:400px;margin:0 auto;padding:32px 0;">
-  <p style="color:#999;font-size:12px;letter-spacing:0.05em;text-transform:uppercase;margin-bottom:24px;">Hiruta Content Manager</p>
-  <h2 style="font-size:20px;font-weight:600;color:#1a1a1a;margin-bottom:8px;">ログイン確認コード</h2>
-  <p style="color:#666;font-size:14px;margin-bottom:24px;">CMSにログインするための確認コードです。</p>
-  <div style="background:#f5f5f0;border-radius:12px;padding:24px;text-align:center;margin-bottom:24px;">
-    <span style="font-size:36px;font-weight:700;letter-spacing:12px;color:#1a1a1a;">${otp}</span>
+<div style="font-family:'Helvetica Neue',Arial,'Noto Sans JP',sans-serif;max-width:440px;margin:0 auto;padding:40px 32px;background:#faf8f4;">
+  <p style="font-size:18px;font-weight:600;color:#3d5a3e;margin-bottom:28px;letter-spacing:0.06em;">Hiruta Studio</p>
+  <div style="background:white;border-radius:16px;padding:36px 32px;border:1px solid #ddd0c0;box-shadow:0 2px 16px rgba(61,90,62,0.06);">
+    <h2 style="font-size:18px;font-weight:500;color:#333333;margin-bottom:8px;">ログイン確認コード</h2>
+    <p style="color:#666666;font-size:14px;margin-bottom:28px;line-height:1.7;">サイト編集画面にログインするための確認コードです。</p>
+    <div style="background:#f4f0e8;border-radius:12px;padding:28px;text-align:center;margin-bottom:28px;border:1px solid #ddd0c0;">
+      <span style="font-size:38px;font-weight:700;letter-spacing:12px;color:#3d5a3e;">${otp}</span>
+    </div>
+    <p style="color:#888;font-size:13px;line-height:1.7;">このコードは<strong style="color:#3d5a3e;">10分間</strong>有効です。<br>身に覚えのない場合は、このメールを無視してください。</p>
   </div>
-  <p style="color:#888;font-size:13px;">このコードは<strong>10分間</strong>有効です。<br>身に覚えのない場合は無視してください。</p>
+  <p style="color:#aaa;font-size:12px;margin-top:24px;text-align:center;">Hiruta Studio — サイト編集システム</p>
 </div>`;
 
   const textBody = `確認コード: ${otp}\n\nこのコードは10分間有効です。\nCMS画面に戻って入力してください。\n\n身に覚えのない場合は、このメールを無視してください。`;
@@ -277,9 +308,9 @@ async function sendOTPEmail(to: string, otp: string, env: Env): Promise<void> {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        from: 'Hiruta Content Manager <onboarding@resend.dev>',
+        from: 'Hiruta Studio <onboarding@resend.dev>',
         to: [to],
-        subject: '【Hiruta Content Manager】ログイン確認コード',
+        subject: '【Hiruta Studio】ログイン確認コード',
         html: htmlBody,
         text: textBody
       })
@@ -309,8 +340,8 @@ async function handleAuthGet(request: Request): Promise<Response> {
   // Decap CMS から渡されるパラメータを保持
   const params = url.searchParams.toString();
 
-  return htmlPage('ログイン - Hiruta Content Manager', `
-    <h1>コンテンツ管理にログイン</h1>
+  return htmlPage('ログイン - Hiruta Studio', `
+    <h1>サイトの編集にログインします</h1>
     <p class="desc">登録済みのメールアドレスを入力してください。確認コードをお送りします。</p>
     ${errorHtml}
     <form method="POST" action="/auth/send-otp?${params}">
@@ -378,7 +409,7 @@ async function handleVerifyGet(request: Request): Promise<Response> {
     .map(([k, v]) => `<input type="hidden" name="${escapeHtml(k)}" value="${escapeHtml(v)}">`)
     .join('\n');
 
-  return htmlPage('確認コードの入力 - Hiruta Content Manager', `
+  return htmlPage('確認コードの入力 - Hiruta Studio', `
     <h1>確認コードを入力</h1>
     <p class="desc">メールに届いた6桁のコードを入力してください。</p>
     ${msgHtml}
@@ -431,7 +462,7 @@ async function handleCallback(request: Request, env: Env): Promise<Response> {
 
   const email = await verifySessionToken(token, env.SESSION_SECRET);
   if (!email) {
-    return htmlPage('認証エラー', `
+    return htmlPage('認証エラー - Hiruta Studio', `
       <h1>認証に失敗しました</h1>
       <p class="desc">セッションが無効です。<a href="/auth">再度ログイン</a>してください。</p>
     `);
@@ -451,7 +482,7 @@ async function handleCallback(request: Request, env: Env): Promise<Response> {
 <html lang="ja">
 <head>
   <meta charset="utf-8">
-  <title>認証完了 - Hiruta Content Manager</title>
+  <title>認証完了 - Hiruta Studio</title>
 </head>
 <body>
   <script>
