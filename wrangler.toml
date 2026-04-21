@@ -4,7 +4,7 @@ compatibility_date = "2025-04-01"
 compatibility_flags = ["nodejs_compat"]
 
 [vars]
-GITHUB_REPO = "naruNaru1212/hiruta-lp-astro"
+GITHUB_REPO = "lp-as-a-service/hiruta-lp-astro"
 GITHUB_BRANCH = "main"
 
 # Secrets（wrangler secret put で設定、ソースには含めない）:
