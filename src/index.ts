@@ -14,6 +14,8 @@
  * POST /auth/send-otp      - OTP 生成・メール送信
  * GET  /auth/verify        - OTP 入力フォーム
  * POST /auth/verify        - OTP 検証 → redirect flow でトークンを返す（redirect パラメータ必須）
+ * GET  /invite?t=<token>   - 招待URL（メアド登録フォーム表示）
+ * POST /invite             - メアド登録処理 → OTP送信 → /auth/verify にリダイレクト
  * GET  /github/*           - GitHub API プロキシ（セッション検証付き）
  * POST /github/*           - GitHub API プロキシ
  * PUT  /github/*           - GitHub API プロキシ
@@ -24,13 +26,21 @@
  * GET /auth/callback       - popup flow 用（廃止。redirect flow のみ）
  */
 
+// ============================================================
+// SECURITY NOTE:
+// HTML出力でユーザー入力を含める際は必ず escapeHtml() を経由すること。
+// 新規エンドポイント追加時も同ルールを厳守。
+// 詳細: tests/xss-regression.sh を参照（回帰テスト）
+// ============================================================
+
 export interface Env {
   GITHUB_TOKEN: string;    // 管理者の GitHub PAT
   SESSION_SECRET: string;  // OTP・セッション署名用シークレット（32文字以上推奨）
-  ALLOWED_EMAILS: string;  // カンマ区切りの許可メールアドレス
+  MASTER_EMAIL: string;    // マスター管理者メールアドレス（常時ログイン可能）
   GITHUB_REPO: string;     // "lp-as-a-service/hiruta-lp-astro"
   GITHUB_BRANCH: string;   // "main"
   RESEND_API_KEY: string;  // Resend API key（re_xxx）
+  HIRUTA_STUDIO_AUTH: KVNamespace; // 招待トークン・ユーザー管理 KV
 }
 
 // ================================================================
@@ -140,9 +150,15 @@ async function verifySessionToken(token: string, secret: string): Promise<string
   }
 }
 
-function isAllowedEmail(email: string, allowedList: string): boolean {
-  const emails = allowedList.split(',').map(e => e.trim().toLowerCase());
-  return emails.includes(email.toLowerCase());
+async function isAllowedEmail(email: string, env: Env): Promise<boolean> {
+  const normalizedEmail = email.toLowerCase().trim();
+  // マスターメアドは無条件許可
+  if (normalizedEmail === env.MASTER_EMAIL.toLowerCase().trim()) {
+    return true;
+  }
+  // KV で登録済みユーザーを確認
+  const user = await env.HIRUTA_STUDIO_AUTH.get<{ allowed: boolean }>(`user:${normalizedEmail}`, 'json');
+  return user !== null && user.allowed === true;
 }
 
 // ================================================================
@@ -431,7 +447,7 @@ async function sendOTPEmail(to: string, otp: string, env: Env): Promise<void> {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        from: 'Hiruta Studio <onboarding@resend.dev>',
+        from: 'Hiruta Studio <noreply@mail.tomorrow-akashi.com>',
         to: [to],
         subject: '【Hiruta Studio】ログイン確認コード',
         html: htmlBody,
@@ -487,7 +503,7 @@ async function handleSendOTP(request: Request, env: Env): Promise<Response> {
     return Response.redirect(newUrl.toString(), 302);
   }
 
-  if (!isAllowedEmail(email, env.ALLOWED_EMAILS)) {
+  if (!(await isAllowedEmail(email, env))) {
     const newUrl = new URL(url);
     newUrl.pathname = '/auth';
     newUrl.searchParams.set('error', encodeURIComponent('このメールアドレスは登録されていません'));
@@ -514,19 +530,26 @@ async function handleVerifyGet(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const email = url.searchParams.get('email') || '';
   const error = url.searchParams.get('error') || '';
+  const resent = url.searchParams.get('resent') === '1';
 
   const msgHtml = error
-    ? `<div class="error">${decodeURIComponent(error)}</div>`
-    : `<div class="info">確認コードを <strong>${email}</strong> に送信しました。</div>`;
+    ? `<div class="error">${escapeHtml(decodeURIComponent(error))}</div>`
+    : resent
+    ? `<div class="info" style="background:#eaf5ea;border-left:4px solid #3d5a3e;padding:12px 16px;">✓ <strong>${escapeHtml(email)}</strong> に確認コードを再送信しました。受信箱をご確認ください。</div>`
+    : `<div class="info">確認コードを <strong>${escapeHtml(email)}</strong> に送信しました。</div>`;
 
   // hidden で全パラメータを保持（HTML エスケープのみ。URL エンコードしない）
-  // ※ `value="${encodeURIComponent(v)}"` はダブルエンコードのバグ。
-  //    searchParams.entries() は既にデコード済みの生値を返すため、
-  //    HTMLの属性値としてエスケープだけすればよい。
+  // ※ resent フラグは再送信確認メッセージの一度きり表示目的なので hiddenInputs から除外
+  //    （除外しないと POST /auth/verify 経由で resent=1 が残り続け、誤メッセージ再表示の原因になる）
   const hiddenInputs = Array.from(url.searchParams.entries())
-    .filter(([k]) => k !== 'error')
+    .filter(([k]) => k !== 'error' && k !== 'resent')
     .map(([k, v]) => `<input type="hidden" name="${escapeHtml(k)}" value="${escapeHtml(v)}">`)
     .join('\n');
+
+  // 再送信フォームの action URL に resent=1 を付与（redirect先で "再送信しました" 表示）
+  const resendParams = new URLSearchParams(url.searchParams);
+  resendParams.delete('error');
+  resendParams.set('resent', '1');
 
   return htmlPage('確認コードの入力 - Hiruta Studio', `
     <h1>確認コードを入力</h1>
@@ -540,7 +563,12 @@ async function handleVerifyGet(request: Request): Promise<Response> {
         style="text-align:center;font-size:24px;letter-spacing:8px;">
       <button type="submit">ログイン</button>
     </form>
-    <p class="hint">コードが届かない場合は <a href="/auth?${new URL(request.url).searchParams.toString()}">最初からやり直す</a></p>
+    <form method="POST" action="/auth/send-otp?${resendParams.toString()}" style="margin-top:12px;">
+      <input type="hidden" name="email" value="${escapeHtml(email)}">
+      <p class="hint" style="text-align:center;">コードが届かない場合は
+        <button type="submit" style="background:none;border:none;color:var(--hs-primary);text-decoration:underline;cursor:pointer;font-size:inherit;padding:0;font-family:inherit;">確認コードを再送信</button>
+      </p>
+    </form>
   `);
 }
 
@@ -568,30 +596,38 @@ async function handleVerifyPost(request: Request, env: Env): Promise<Response> {
   // セッショントークン発行
   const sessionToken = await createSessionToken(verifiedEmail, env.SESSION_SECRET);
 
-  // redirect パラメータがある場合（Worker middleware からの redirect flow）
-  // → /admin?hs_authed=1 に URL fragment でトークンを渡して戻す
-  const redirectParam = formData.get('redirect') as string | null;
-  if (redirectParam) {
+  // OTP検証成功 → CMS admin へリダイレクト + Set-Cookie
+  // redirect パラメータが欠けた/不正な場合はデフォルト CMS admin URL にフォールバック
+  // （OTP検証で認証は既に完了しているため、redirect 未指定でもユーザーを admin に送る）
+  const DEFAULT_ADMIN_URL = 'https://hiruta-studio.com/admin/';
+  const rawRedirect = formData.get('redirect') as string | null;
+  let redirectTarget = DEFAULT_ADMIN_URL;
+  if (rawRedirect) {
     try {
-      const dest = new URL(redirectParam);
-      // セキュリティ: workers.dev ドメインのみ許可
-      if (dest.hostname.endsWith('.workers.dev') || dest.hostname === 'localhost') {
-        // クエリで認証済みフラグ、fragment でトークンを渡す
-        dest.searchParams.set('hs_authed', '1');
-        const destWithFragment = dest.toString() + '#hs_token=' + encodeURIComponent(sessionToken);
-
-        // Set-Cookie でセッションを設定（次回以降の Worker ガードをパスさせる）
-        return new Response(null, {
-          status: 302,
-          headers: {
-            'Location': destWithFragment,
-            'Set-Cookie': `hs_session=${sessionToken}; Path=/; Secure; SameSite=Lax; Max-Age=14400`
-          }
-        });
+      const dest = new URL(rawRedirect);
+      // セキュリティ: workers.dev ドメインのみ許可（それ以外はデフォルトにフォールバック）
+      if (dest.hostname.endsWith('.workers.dev') || dest.hostname === 'localhost' || dest.hostname === 'hiruta-studio.com' || dest.hostname.endsWith('.hiruta-studio.com')) {
+        redirectTarget = rawRedirect;
       }
     } catch {
-      // URL パース失敗は無視して通常フローへ
+      // URL パース失敗はデフォルトにフォールバック
     }
+  }
+
+  {
+    const dest = new URL(redirectTarget);
+    // クエリで認証済みフラグ、fragment でトークンを渡す
+    dest.searchParams.set('hs_authed', '1');
+    const destWithFragment = dest.toString() + '#hs_token=' + encodeURIComponent(sessionToken);
+
+    // Set-Cookie でセッションを設定（次回以降の Worker ガードをパスさせる）
+    return new Response(null, {
+      status: 302,
+      headers: {
+        'Location': destWithFragment,
+        'Set-Cookie': `hs_session=${sessionToken}; Path=/; Secure; SameSite=Lax; Max-Age=14400`
+      }
+    });
   }
 
   // redirect パラメータがない場合はエラー（popup flow は廃止。redirect flow のみ）
@@ -624,13 +660,116 @@ async function handleVerifyPost(request: Request, env: Env): Promise<Response> {
     <div class="brand">Hiruta Studio</div>
     <h1>リクエストに問題があります</h1>
     <p>ログインページへの直接アクセスはできません。<br>サイト編集画面からログインしてください。</p>
-    <a href="https://hiruta-lp-astro.kazu12127823.workers.dev/admin/">編集画面に戻る</a>
+    <a href="https://hiruta-studio.com/admin/">編集画面に戻る</a>
   </div>
 </body>
 </html>`, {
     status: 400,
     headers: { 'Content-Type': 'text/html; charset=utf-8' }
   });
+}
+
+// ================================================================
+// 招待 URL ハンドラー
+// ================================================================
+
+interface InviteRecord {
+  client_name: string;
+  created_at: string;
+  created_by: string;
+}
+
+interface UserRecord {
+  allowed: boolean;
+  client_name: string;
+  role: string;
+  added_at: string;
+}
+
+async function handleInviteGet(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const token = url.searchParams.get('t') || '';
+
+  if (!token) {
+    return htmlPage('このURLは使用できません - Hiruta Studio', `
+      <h1>このURLは使用できません</h1>
+      <p class="desc">URLの有効期限が切れているか、既に使用済みです。Hiruta Studio運営にお問い合わせください。</p>
+    `);
+  }
+
+  const invite = await env.HIRUTA_STUDIO_AUTH.get<InviteRecord>(`invite:${token}`, 'json');
+
+  if (!invite) {
+    return htmlPage('このURLは使用できません - Hiruta Studio', `
+      <h1>このURLは使用できません</h1>
+      <p class="desc">URLの有効期限が切れているか、既に使用済みです。Hiruta Studio運営にお問い合わせください。</p>
+    `);
+  }
+
+  return htmlPage(`${escapeHtml(invite.client_name)} 様へ - Hiruta Studio`, `
+    <h1>${escapeHtml(invite.client_name)} 様、ようこそ</h1>
+    <p class="desc">Hiruta Studio のログイン用メールアドレスを登録してください。</p>
+    <form method="POST" action="/invite">
+      <input type="hidden" name="token" value="${escapeHtml(token)}">
+      <label>メールアドレス</label>
+      <input type="email" name="email" placeholder="your@email.com" required autofocus>
+      <button type="submit">登録する</button>
+    </form>
+    <p class="hint">このメールアドレスで、今後LPを編集できるようになります。</p>
+  `);
+}
+
+async function handleInvitePost(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  let formData: FormData;
+  try {
+    formData = await request.formData();
+  } catch {
+    return new Response('Bad Request', { status: 400 });
+  }
+
+  const token = (formData.get('token') as string || '').trim();
+  const email = (formData.get('email') as string || '').trim().toLowerCase();
+
+  if (!token || !email) {
+    return new Response('Bad Request: token and email are required', { status: 400 });
+  }
+
+  // GET→POST間の競合対策: 再検証
+  const invite = await env.HIRUTA_STUDIO_AUTH.get<InviteRecord>(`invite:${token}`, 'json');
+
+  if (!invite) {
+    return htmlPage('このURLは使用できません - Hiruta Studio', `
+      <h1>このURLは使用できません</h1>
+      <p class="desc">URLの有効期限が切れているか、既に使用済みです。Hiruta Studio運営にお問い合わせください。</p>
+    `);
+  }
+
+  // ユーザーを KV に登録
+  const userRecord: UserRecord = {
+    allowed: true,
+    client_name: invite.client_name,
+    role: 'client',
+    added_at: new Date().toISOString()
+  };
+  await env.HIRUTA_STUDIO_AUTH.put(`user:${email}`, JSON.stringify(userRecord));
+
+  // トークンをワンタイム化（削除）
+  await env.HIRUTA_STUDIO_AUTH.delete(`invite:${token}`);
+
+  // OTP を生成してメール送信
+  const { otp, token: otpToken } = await generateOTPToken(email, env.SESSION_SECRET);
+  await sendOTPEmail(email, otp, env);
+
+  // /auth/verify にリダイレクト
+  // 招待フロー用に redirect パラメータを埋め込む（verify 後に CMS admin へ戻すため）
+  const verifyUrl = new URL(url);
+  verifyUrl.pathname = '/auth/verify';
+  verifyUrl.search = '';
+  verifyUrl.searchParams.set('email', email);
+  verifyUrl.searchParams.set('t', otpToken);
+  verifyUrl.searchParams.set('redirect', 'https://hiruta-studio.com/admin/');
+  return Response.redirect(verifyUrl.toString(), 302);
 }
 
 // ================================================================
@@ -723,6 +862,34 @@ export default {
     if (pathname === '/auth/send-otp' && method === 'POST') return handleSendOTP(request, env);
     if (pathname === '/auth/verify' && method === 'GET') return handleVerifyGet(request);
     if (pathname === '/auth/verify' && method === 'POST') return handleVerifyPost(request, env);
+
+    // セッション生存確認（localStorage のトークンが有効かをクライアントが問い合わせる）
+    // hiruta-studio.js が loadDecap() 前に呼び出し、無効なら入口画面に戻す
+    if (pathname === '/auth/session' && method === 'GET') {
+      const authHeader = request.headers.get('Authorization') || '';
+      const token = authHeader.replace(/^(Bearer|token)\s+/i, '').trim();
+      if (!token) {
+        return new Response(JSON.stringify({ valid: false }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+        });
+      }
+      const email = await verifySessionToken(token, env.SESSION_SECRET);
+      if (!email) {
+        return new Response(JSON.stringify({ valid: false }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+        });
+      }
+      return new Response(JSON.stringify({ valid: true, email }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+      });
+    }
+
+    // 招待フロー
+    if (pathname === '/invite' && method === 'GET') return handleInviteGet(request, env);
+    if (pathname === '/invite' && method === 'POST') return handleInvitePost(request, env);
 
     // GitHub API プロキシ（セッション検証）
     if (pathname.startsWith('/github/')) {
