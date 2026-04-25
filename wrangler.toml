@@ -18,6 +18,11 @@ GITHUB_BRANCH = "main"
 binding = "HIRUTA_STUDIO_AUTH"
 id = "345304590d7b4ae1911cec75e500861d"
 
+# KV Namespace: 顧客別画像アップロード容量quota管理
+[[kv_namespaces]]
+binding = "HIRUTA_QUOTA"
+id = "7e68469628644a01855124fdb28530aa"
+
 # Secrets（wrangler secret put で設定、ソースには含めない）:
 #   GITHUB_TOKEN      - 管理者の GitHub PAT（repo権限が必要）
 #   SESSION_SECRET    - HMAC署名用シークレット（32文字以上の乱数）

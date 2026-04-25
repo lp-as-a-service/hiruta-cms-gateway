@@ -41,6 +41,7 @@ export interface Env {
   GITHUB_BRANCH: string;   // "main"
   RESEND_API_KEY: string;  // Resend API key（re_xxx）
   HIRUTA_STUDIO_AUTH: KVNamespace; // 招待トークン・ユーザー管理 KV
+  HIRUTA_QUOTA: KVNamespace;       // 顧客別画像アップロード容量quota KV
 }
 
 // ================================================================
@@ -773,10 +774,82 @@ async function handleInvitePost(request: Request, env: Env): Promise<Response> {
 }
 
 // ================================================================
+// 顧客別画像アップロード容量quota管理
+// ================================================================
+
+const DEFAULT_QUOTA_BYTES = 200 * 1024 * 1024; // 200MB
+const MEDIA_FOLDER_PREFIX = 'public/images/uploads/';
+
+interface QuotaRecord {
+  email: string;
+  used_bytes: number;
+  file_count: number;
+  last_upload: string;
+  quota_bytes: number;
+}
+
+/** Decap CMS の画像アップロード（PUT）判定 */
+function isImageUpload(method: string, filePath: string): boolean {
+  return method === 'PUT' && filePath.startsWith(MEDIA_FOLDER_PREFIX);
+}
+
+/** Decap CMS の画像削除（DELETE）判定 */
+function isImageDelete(method: string, filePath: string): boolean {
+  return method === 'DELETE' && filePath.startsWith(MEDIA_FOLDER_PREFIX);
+}
+
+/**
+ * /github/repos/{owner}/{repo}/contents/{file_path} のパスから
+ * {file_path} 部分を抽出する。マッチしない場合は null。
+ */
+function extractContentsFilePath(pathname: string): string | null {
+  // pathname は /github/repos/owner/repo/contents/... の形式
+  const match = pathname.match(/^\/github\/repos\/[^/]+\/[^/]+\/contents\/(.+)$/);
+  return match ? match[1] : null;
+}
+
+/** base64エンコードされた画像の実バイト数を計算 */
+function getBase64ContentSize(content: string): number {
+  // base64は 4文字 → 3バイト。末尾の '=' パディングで補正。
+  const padCount = (content.match(/={1,2}$/) ?? [''])[0].length;
+  return Math.floor(content.length * 3 / 4) - padCount;
+}
+
+/** KVから quota レコードを取得（存在しなければデフォルト値を返す） */
+async function getQuota(env: Env, email: string): Promise<QuotaRecord> {
+  const record = await env.HIRUTA_QUOTA.get<QuotaRecord>(`quota:${email}`, 'json');
+  if (record) return record;
+  return {
+    email,
+    used_bytes: 0,
+    file_count: 0,
+    last_upload: '',
+    quota_bytes: DEFAULT_QUOTA_BYTES,
+  };
+}
+
+/** KVの quota レコードを更新する */
+async function updateQuota(
+  env: Env,
+  email: string,
+  deltaBytes: number,
+  deltaFiles: number
+): Promise<void> {
+  const current = await getQuota(env, email);
+  const updated: QuotaRecord = {
+    ...current,
+    used_bytes: Math.max(0, current.used_bytes + deltaBytes),
+    file_count: Math.max(0, current.file_count + deltaFiles),
+    last_upload: new Date().toISOString(),
+  };
+  await env.HIRUTA_QUOTA.put(`quota:${email}`, JSON.stringify(updated));
+}
+
+// ================================================================
 // GitHub API プロキシ
 // ================================================================
 
-async function proxyGitHub(request: Request, env: Env): Promise<Response> {
+async function proxyGitHub(request: Request, env: Env, preReadBody?: ArrayBuffer): Promise<Response> {
   const url = new URL(request.url);
 
   // /github/repos/owner/repo/... → https://api.github.com/repos/owner/repo/...
@@ -797,8 +870,9 @@ async function proxyGitHub(request: Request, env: Env): Promise<Response> {
   const contentType = request.headers.get('Content-Type');
   if (contentType) headers.set('Content-Type', contentType);
 
+  // preReadBody: quota処理がbodyを先読みした場合はそちらを使う（ストリームは1度しか読めない）
   const body = !['GET', 'HEAD'].includes(request.method)
-    ? await request.arrayBuffer()
+    ? (preReadBody ?? await request.arrayBuffer())
     : undefined;
 
   console.log(`[GitHub Proxy] ${request.method} ${githubUrl}`);
@@ -913,6 +987,70 @@ export default {
       }
 
       console.log(`[Auth] ${method} ${pathname} - user: ${email}`);
+
+      // ================================================================
+      // quota tracking: 画像アップロード（PUT）/ 削除（DELETE）の検出
+      // ================================================================
+      const filePath = extractContentsFilePath(pathname);
+
+      if (filePath !== null && isImageDelete(method, filePath)) {
+        // 削除: file_count のみ減算（サイズ不明のため used_bytes は変更しない）
+        console.log(`[Quota] DELETE ${filePath} - user: ${email}`);
+        await updateQuota(env, email, 0, -1);
+        return proxyGitHub(request, env);
+      }
+
+      if (filePath !== null && isImageUpload(method, filePath)) {
+        // bodyを先読みして base64 content を取得
+        const rawBody = await request.arrayBuffer();
+        let parsedBody: { content?: string } = {};
+        try {
+          parsedBody = JSON.parse(new TextDecoder().decode(rawBody));
+        } catch {
+          // JSON parse 失敗時は quota チェックをスキップして既存処理に委譲
+          console.warn(`[Quota] Body parse failed for PUT ${filePath} - user: ${email}`);
+          return proxyGitHub(request, env, rawBody);
+        }
+
+        if (typeof parsedBody.content === 'string') {
+          const newSize = getBase64ContentSize(parsedBody.content);
+          const quota = await getQuota(env, email);
+
+          console.log(`[Quota] Upload ${filePath} - user: ${email}, size: ${newSize}, used: ${quota.used_bytes}/${quota.quota_bytes}`);
+
+          if (quota.used_bytes + newSize > quota.quota_bytes) {
+            // quota 超過 → 413 を GitHub 互換形式で返す
+            return new Response(
+              JSON.stringify({
+                message: `Upload quota exceeded. Used ${Math.round(quota.used_bytes / 1048576)}MB of ${Math.round(quota.quota_bytes / 1048576)}MB. Cannot upload ${Math.round(newSize / 1048576)}MB file.`,
+                documentation_url: 'https://hiruta-studio.com/admin/'
+              }),
+              {
+                status: 413,
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Access-Control-Allow-Origin': '*'
+                }
+              }
+            );
+          }
+
+          // quota OK → GitHub に転送
+          const ghResponse = await proxyGitHub(request, env, rawBody);
+
+          // GitHub が 2xx を返した場合のみ quota を増やす
+          if (ghResponse.status >= 200 && ghResponse.status < 300) {
+            await updateQuota(env, email, newSize, 1);
+            console.log(`[Quota] Updated - user: ${email}, new used: ${quota.used_bytes + newSize}`);
+          }
+
+          return ghResponse;
+        }
+        // content フィールドなし（テキストファイル等）→ 既存処理に委譲
+        return proxyGitHub(request, env, rawBody);
+      }
+
+      // 上記以外（テキストファイル編集・ツリー取得等）→ 既存処理に委譲
       return proxyGitHub(request, env);
     }
 
