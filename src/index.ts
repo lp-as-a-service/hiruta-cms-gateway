@@ -14,8 +14,10 @@
  * POST /auth/send-otp      - OTP 生成・メール送信
  * GET  /auth/verify        - OTP 入力フォーム
  * POST /auth/verify        - OTP 検証 → redirect flow でトークンを返す（redirect パラメータ必須）
- * GET  /invite?t=<token>   - 招待URL（メアド登録フォーム表示）
- * POST /invite             - メアド登録処理 → OTP送信 → /auth/verify にリダイレクト
+ * GET  /invite?t=<token>   - 招待URL（メアド登録フォーム表示）[ワンタイム]
+ * POST /invite             - メアド登録処理 → OTP送信 → /auth/verify にリダイレクト [ワンタイム]
+ * GET  /invite-perm/:slug  - 永続招待URL（メアド入力フォーム表示）
+ * POST /invite-perm/:slug  - メアド登録/再ログイン処理 → OTP送信 → /auth/verify にリダイレクト
  * GET  /github/*           - GitHub API プロキシ（セッション検証付き）
  * POST /github/*           - GitHub API プロキシ
  * PUT  /github/*           - GitHub API プロキシ
@@ -774,6 +776,114 @@ async function handleInvitePost(request: Request, env: Env): Promise<Response> {
 }
 
 // ================================================================
+// 永続招待URL ハンドラー（/invite-perm/:slug）
+// ================================================================
+
+interface InvitePermRecord {
+  client_name: string;
+  lp_slug: string;
+  max_users: number;
+  registered_emails: string[];
+  created_at: string;
+}
+
+async function handleInvitePermGet(request: Request, env: Env, slug: string): Promise<Response> {
+  if (!slug) {
+    return htmlPage('この招待URLは無効です - Hiruta Studio', `
+      <h1>この招待URLは無効です</h1>
+      <p class="desc">この招待URLは無効です。管理者に連絡してください。</p>
+    `);
+  }
+
+  const invite = await env.HIRUTA_STUDIO_AUTH.get<InvitePermRecord>(`invite-perm:${slug}`, 'json');
+
+  if (!invite) {
+    return htmlPage('この招待URLは無効です - Hiruta Studio', `
+      <h1>この招待URLは無効です</h1>
+      <p class="desc">この招待URLは無効です。管理者に連絡してください。</p>
+    `);
+  }
+
+  return htmlPage(`${escapeHtml(invite.client_name)} 様へ - Hiruta Studio`, `
+    <h1>${escapeHtml(invite.client_name)} 様、ようこそ</h1>
+    <p class="desc">Hiruta Studio のログイン用メールアドレスを入力してください。</p>
+    <form method="POST" action="/invite-perm/${escapeHtml(slug)}">
+      <label>メールアドレス</label>
+      <input type="email" name="email" placeholder="your@email.com" required autofocus>
+      <button type="submit">登録する</button>
+    </form>
+    <p class="hint">このメールアドレスで、今後LPを編集できるようになります。</p>
+  `);
+}
+
+async function handleInvitePermPost(request: Request, env: Env, slug: string): Promise<Response> {
+  const url = new URL(request.url);
+  let formData: FormData;
+  try {
+    formData = await request.formData();
+  } catch {
+    return new Response('Bad Request', { status: 400 });
+  }
+
+  const email = (formData.get('email') as string || '').trim().toLowerCase();
+
+  if (!slug || !email) {
+    return new Response('Bad Request: slug and email are required', { status: 400 });
+  }
+
+  // KV から invite-perm レコードを取得
+  const invite = await env.HIRUTA_STUDIO_AUTH.get<InvitePermRecord>(`invite-perm:${slug}`, 'json');
+
+  if (!invite) {
+    return htmlPage('この招待URLは無効です - Hiruta Studio', `
+      <h1>この招待URLは無効です</h1>
+      <p class="desc">この招待URLは無効です。管理者に連絡してください。</p>
+    `);
+  }
+
+  const alreadyRegistered = invite.registered_emails.includes(email);
+
+  if (!alreadyRegistered && invite.registered_emails.length >= invite.max_users) {
+    // max_users 到達 かつ 新規メアド → 拒否
+    return htmlPage('登録済みです - Hiruta Studio', `
+      <h1>このLPには既に管理者が登録されています</h1>
+      <p class="desc">既存の管理者メアドをご利用ください。ご不明な場合は管理者に連絡してください。</p>
+    `);
+  }
+
+  if (!alreadyRegistered) {
+    // 新規登録: user レコード書き込み + invite-perm の registered_emails に追加
+    const userRecord: UserRecord = {
+      allowed: true,
+      client_name: invite.client_name,
+      role: 'client',
+      added_at: new Date().toISOString()
+    };
+    await env.HIRUTA_STUDIO_AUTH.put(`user:${email}`, JSON.stringify(userRecord));
+
+    const updatedInvite: InvitePermRecord = {
+      ...invite,
+      registered_emails: [...invite.registered_emails, email]
+    };
+    await env.HIRUTA_STUDIO_AUTH.put(`invite-perm:${slug}`, JSON.stringify(updatedInvite));
+  }
+  // 既登録メアドの場合はそのままOTP送信フローへ（再ログイン扱い）
+
+  // OTP 生成・送信
+  const { otp, token: otpToken } = await generateOTPToken(email, env.SESSION_SECRET);
+  await sendOTPEmail(email, otp, env);
+
+  // /auth/verify にリダイレクト
+  const verifyUrl = new URL(url);
+  verifyUrl.pathname = '/auth/verify';
+  verifyUrl.search = '';
+  verifyUrl.searchParams.set('email', email);
+  verifyUrl.searchParams.set('t', otpToken);
+  verifyUrl.searchParams.set('redirect', 'https://hiruta-studio.com/admin/');
+  return Response.redirect(verifyUrl.toString(), 302);
+}
+
+// ================================================================
 // 顧客別画像アップロード容量quota管理
 // ================================================================
 
@@ -843,6 +953,176 @@ async function updateQuota(
     last_upload: new Date().toISOString(),
   };
   await env.HIRUTA_QUOTA.put(`quota:${email}`, JSON.stringify(updated));
+}
+
+// ================================================================
+// イベント参加申し込み
+// ================================================================
+
+/**
+ * KV の user: プレフィックスのキーを全件スキャンし、
+ * MASTER_EMAIL 以外の登録ユーザーのメールアドレスを返す。
+ * 該当ユーザーがいない場合は MASTER_EMAIL にフォールバック。
+ */
+async function resolveEventNotifyEmail(env: Env): Promise<string> {
+  const masterEmail = env.MASTER_EMAIL.toLowerCase().trim();
+  let cursor: string | undefined = undefined;
+  const found: string[] = [];
+
+  // KV list は最大 1000 件/ページ。ページネーションで全件取得する
+  do {
+    const result: KVNamespaceListResult<{ allowed: boolean }, string> =
+      await env.HIRUTA_STUDIO_AUTH.list<{ allowed: boolean }>({ prefix: 'user:', cursor });
+    for (const key of result.keys) {
+      // key.name = "user:email@example.com"
+      const email = key.name.slice('user:'.length);
+      if (email !== masterEmail) {
+        found.push(email);
+      }
+    }
+    cursor = result.list_complete ? undefined : result.cursor;
+  } while (cursor);
+
+  return found.length > 0 ? found[0] : masterEmail;
+}
+
+/**
+ * POST /api/event-signup
+ * イベント参加申し込みを受け付け、担当者メールに通知を送る。
+ */
+async function handleEventSignup(request: Request, env: Env): Promise<Response> {
+  const corsHeaders = {
+    'Access-Control-Allow-Origin': 'https://hiruta-studio.com',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Content-Type': 'application/json'
+  };
+
+  // Content-Type 確認
+  const contentType = request.headers.get('Content-Type') || '';
+  if (!contentType.includes('application/json')) {
+    return new Response(
+      JSON.stringify({ error: 'Content-Type must be application/json' }),
+      { status: 415, headers: corsHeaders }
+    );
+  }
+
+  // JSONパース
+  let body: Record<string, string>;
+  try {
+    body = await request.json() as Record<string, string>;
+  } catch {
+    return new Response(
+      JSON.stringify({ error: 'Invalid JSON' }),
+      { status: 400, headers: corsHeaders }
+    );
+  }
+
+  const participantName  = (body.participantName  || '').trim();
+  const participantEmail = (body.participantEmail || '').trim();
+  const eventDate        = (body.eventDate        || '').trim();
+  const message          = (body.message          || '').trim();
+
+  // バリデーション
+  if (!participantName) {
+    return new Response(
+      JSON.stringify({ error: 'participantName は必須です' }),
+      { status: 400, headers: corsHeaders }
+    );
+  }
+  if (!participantEmail || !participantEmail.includes('@')) {
+    return new Response(
+      JSON.stringify({ error: 'participantEmail が不正です' }),
+      { status: 400, headers: corsHeaders }
+    );
+  }
+
+  // 通知先メールを解決
+  const notifyTo = await resolveEventNotifyEmail(env);
+
+  // メール本文（HTML）
+  const htmlBody = `
+<div style="font-family:'Helvetica Neue',Arial,'Noto Sans JP',sans-serif;max-width:480px;margin:0 auto;padding:40px 32px;background:#faf8f4;">
+  <p style="font-size:18px;font-weight:600;color:#3d5a3e;margin-bottom:28px;letter-spacing:0.06em;">Hiruta Studio</p>
+  <div style="background:white;border-radius:16px;padding:36px 32px;border:1px solid #ddd0c0;box-shadow:0 2px 16px rgba(61,90,62,0.06);">
+    <h2 style="font-size:18px;font-weight:500;color:#333333;margin-bottom:16px;">イベント参加申し込みが届きました</h2>
+    <table style="width:100%;border-collapse:collapse;font-size:14px;color:#333;">
+      <tr style="border-bottom:1px solid #eee;">
+        <th style="text-align:left;padding:10px 8px;color:#6a5a48;white-space:nowrap;width:35%;">お名前</th>
+        <td style="padding:10px 8px;">${escapeHtml(participantName)}</td>
+      </tr>
+      <tr style="border-bottom:1px solid #eee;">
+        <th style="text-align:left;padding:10px 8px;color:#6a5a48;">メールアドレス</th>
+        <td style="padding:10px 8px;">${escapeHtml(participantEmail)}</td>
+      </tr>
+      <tr style="border-bottom:1px solid #eee;">
+        <th style="text-align:left;padding:10px 8px;color:#6a5a48;">参加希望日</th>
+        <td style="padding:10px 8px;">${escapeHtml(eventDate || '（未入力）')}</td>
+      </tr>
+      <tr>
+        <th style="text-align:left;padding:10px 8px;color:#6a5a48;vertical-align:top;">メッセージ</th>
+        <td style="padding:10px 8px;white-space:pre-wrap;">${escapeHtml(message || '（なし）')}</td>
+      </tr>
+    </table>
+  </div>
+  <p style="color:#aaa;font-size:12px;margin-top:24px;text-align:center;">Hiruta Studio — イベント参加申し込みフォーム</p>
+</div>`;
+
+  const textBody = [
+    '【イベント参加申し込み】',
+    `お名前　　　: ${participantName}`,
+    `メールアドレス: ${participantEmail}`,
+    `参加希望日　: ${eventDate || '（未入力）'}`,
+    `メッセージ　: ${message || '（なし）'}`,
+  ].join('\n');
+
+  if (!env.RESEND_API_KEY) {
+    console.error('[EventSignup] RESEND_API_KEY is not set');
+    return new Response(
+      JSON.stringify({ error: 'メール送信設定が未完了です' }),
+      { status: 500, headers: corsHeaders }
+    );
+  }
+
+  try {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        from: 'Hiruta Studio <noreply@mail.tomorrow-akashi.com>',
+        to: [notifyTo],
+        subject: `【イベント参加申し込み】${participantName} 様`,
+        html: htmlBody,
+        text: textBody
+      })
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error(`[EventSignup] Resend failed: ${res.status} ${errText}`);
+      return new Response(
+        JSON.stringify({ error: 'メール送信に失敗しました' }),
+        { status: 502, headers: corsHeaders }
+      );
+    }
+
+    const result = await res.json() as { id?: string };
+    console.log(`[EventSignup] Email sent to ${notifyTo} (id: ${result.id ?? 'unknown'})`);
+
+    return new Response(
+      JSON.stringify({ ok: true }),
+      { status: 200, headers: corsHeaders }
+    );
+  } catch (e) {
+    console.error('[EventSignup] Exception:', e);
+    return new Response(
+      JSON.stringify({ error: 'メール送信中にエラーが発生しました' }),
+      { status: 500, headers: corsHeaders }
+    );
+  }
 }
 
 // ================================================================
@@ -961,9 +1241,17 @@ export default {
       });
     }
 
-    // 招待フロー
+    // 招待フロー（ワンタイム）
     if (pathname === '/invite' && method === 'GET') return handleInviteGet(request, env);
     if (pathname === '/invite' && method === 'POST') return handleInvitePost(request, env);
+
+    // 永続招待フロー（LP slug-based）
+    const invitePermMatch = pathname.match(/^\/invite-perm\/([\w-]+)$/);
+    if (invitePermMatch) {
+      const slug = invitePermMatch[1];
+      if (method === 'GET') return handleInvitePermGet(request, env, slug);
+      if (method === 'POST') return handleInvitePermPost(request, env, slug);
+    }
 
     // GitHub API プロキシ（セッション検証）
     if (pathname.startsWith('/github/')) {
@@ -1052,6 +1340,11 @@ export default {
 
       // 上記以外（テキストファイル編集・ツリー取得等）→ 既存処理に委譲
       return proxyGitHub(request, env);
+    }
+
+    // イベント参加申し込みフォーム
+    if (pathname === '/api/event-signup' && method === 'POST') {
+      return handleEventSignup(request, env);
     }
 
     return new Response(JSON.stringify({ error: 'Not Found' }), {
