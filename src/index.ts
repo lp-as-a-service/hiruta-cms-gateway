@@ -1343,6 +1343,17 @@ export default {
     }
 
     // イベント参加申し込みフォーム
+    if (pathname === '/api/event-signup' && method === 'OPTIONS') {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          'Access-Control-Allow-Origin': 'https://hiruta-studio.com',
+          'Access-Control-Allow-Methods': 'POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type',
+          'Access-Control-Max-Age': '86400',
+        },
+      });
+    }
     if (pathname === '/api/event-signup' && method === 'POST') {
       return handleEventSignup(request, env);
     }
